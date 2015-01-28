@@ -44,6 +44,42 @@ from django.core.exceptions import ObjectDoesNotExist
 from django.conf import settings
 from django.utils.cache import add_never_cache_headers, patch_response_headers
 
+from time import mktime
+import logging
+query_log = logging.getLogger('query')
+def log_query(request, requestOptions, requestContext, renderingTime):
+  timeRange = requestOptions['endTime'] - requestOptions['startTime']
+  logdata = {
+    'graphType': requestOptions['graphType'],
+    'graphClass': requestOptions.get('graphClass'),
+    'format': requestOptions.get('format'),
+    'start': int(mktime(requestOptions['startTime'].utctimetuple())),
+    'end': int(mktime(requestOptions['endTime'].utctimetuple())),
+    'range': timeRange.days * 24 * 3600 + int(round(timeRange.seconds/60.)),
+    'localOnly': requestOptions['localOnly'],
+    'useCache': 'noCache' not in requestOptions,
+    'cachedResponse': requestContext.get('cachedResponse', False),
+    'cachedData': requestContext.get('cachedData', False),
+    'maxDataPoints': requestOptions.get('maxDataPoints', 0),
+    'renderingTime': renderingTime,
+  }
+
+  if 'HTTP_X_REAL_IP' in request.META:
+    logdata['source'] = request.META['HTTP_X_REAL_IP']
+  else:
+    logdata['source'] = request.get_host()
+
+  for target,retrievalTime in requestContext['targets']:
+    if isinstance(target, list):
+      for t in target:
+        logdata['target'] = t
+        logdata['retrievalTime'] = retrievalTime
+        query_log.info(logdata)
+    else:
+      logdata['target'] = target
+      logdata['retrievalTime'] = retrievalTime
+      query_log.info(logdata)
+
 
 def renderView(request):
   start = time()
@@ -54,6 +90,7 @@ def renderView(request):
     'startTime' : requestOptions['startTime'],
     'endTime' : requestOptions['endTime'],
     'localOnly' : requestOptions['localOnly'],
+    'targets': [],
     'data' : []
   }
   data = requestContext['data']
@@ -65,6 +102,9 @@ def renderView(request):
     if cachedResponse:
       log.cache('Request-Cache hit [%s]' % requestKey)
       log.rendering('Returned cached response in %.6f' % (time() - start))
+      requestContext['cachedResponse'] = True
+      requestContext['targets'].append((requestOptions['targets'], time() - start))
+      log_query(request, requestOptions, requestContext, time() - start)
       return cachedResponse
     else:
       log.cache('Request-Cache miss [%s]' % requestKey)
@@ -80,15 +120,18 @@ def renderView(request):
           raise ValueError("Invalid target '%s'" % target)
         data.append( (name,value) )
       else:
+        t = time()
         seriesList = evaluateTarget(requestContext, target)
 
         for series in seriesList:
           func = PieFunctions[requestOptions['pieMode']]
           data.append( (series.name, func(requestContext, series) or 0 ))
+        requestContext['targets'].append((target, time() - t))
 
   elif requestOptions['graphType'] == 'line':
     # Let's see if at least our data is cached
     if useCache:
+      t = time()
       targets = requestOptions['targets']
       startTime = requestOptions['startTime']
       endTime = requestOptions['endTime']
@@ -96,6 +139,8 @@ def renderView(request):
       cachedData = cache.get(dataKey)
       if cachedData:
         log.cache("Data-Cache hit [%s]" % dataKey)
+        requestContext['cachedData'] = True
+        requestContext['targets'].append((targets, time() - t))
       else:
         log.cache("Data-Cache miss [%s]" % dataKey)
     else:
@@ -110,6 +155,7 @@ def renderView(request):
         t = time()
         seriesList = evaluateTarget(requestContext, target)
         log.rendering("Retrieval of %s took %.6f" % (target, time() - t))
+        requestContext['targets'].append((target, time() - t))
         data.extend(seriesList)
 
       if useCache:
@@ -126,6 +172,7 @@ def renderView(request):
           timestamp = datetime.fromtimestamp(series.start + (i * series.step), requestOptions['tzinfo'])
           writer.writerow((series.name, timestamp.strftime("%Y-%m-%d %H:%M:%S"), value))
 
+      log_query(request, requestOptions, requestContext, time() - start)
       return response
 
     if format == 'json':
@@ -171,6 +218,7 @@ def renderView(request):
         patch_response_headers(response, cache_timeout=cacheTimeout)
       else:
         add_never_cache_headers(response)
+      log_query(request, requestOptions, requestContext, time() - start)
       return response
 
     if format == 'raw':
@@ -181,6 +229,7 @@ def renderView(request):
         response.write('\n')
 
       log.rendering('Total rawData rendering time %.6f' % (time() - start))
+      log_query(request, requestOptions, requestContext, time() - start)
       return response
 
     if format == 'svg':
@@ -192,6 +241,7 @@ def renderView(request):
       pickle.dump(seriesInfo, response, protocol=-1)
 
       log.rendering('Total pickle rendering time %.6f' % (time() - start))
+      log_query(request, requestOptions, requestContext, time() - start)
       return response
 
 
@@ -217,6 +267,7 @@ def renderView(request):
     add_never_cache_headers(response)
 
   log.rendering('Total rendering time %.6f seconds' % (time() - start))
+  log_query(request, requestOptions, requestContext, time() - start)
   return response
 
 
