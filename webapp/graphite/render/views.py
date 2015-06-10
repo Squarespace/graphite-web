@@ -14,6 +14,7 @@ limitations under the License."""
 import csv
 import math
 import pytz
+import httplib
 from datetime import datetime
 from time import time
 from random import shuffle
@@ -29,7 +30,6 @@ except ImportError:
 
 from graphite.compat import HttpResponse
 from graphite.util import getProfileByUsername, json, unpickle
-from graphite.remote_storage import HTTPConnectionWithTimeout
 from graphite.logger import log
 from graphite.render.evaluator import evaluateTarget
 from graphite.render.attime import parseATTime
@@ -391,14 +391,12 @@ def delegateRendering(graphType, graphOptions):
       try:
         connection = pool.pop()
       except KeyError: #No available connections, have to make a new one
-        connection = HTTPConnectionWithTimeout(server)
-        connection.timeout = settings.REMOTE_RENDER_CONNECT_TIMEOUT
+        connection = httplib.HTTPConnection(server, timeout=settings.REMOTE_RENDER_CONNECT_TIMEOUT) #retry once
       # Send the request
       try:
         connection.request('POST','/render/local/', postData)
       except CannotSendRequest:
-        connection = HTTPConnectionWithTimeout(server) #retry once
-        connection.timeout = settings.REMOTE_RENDER_CONNECT_TIMEOUT
+        connection = httplib.HTTPConnection(server, timeout=settings.REMOTE_RENDER_CONNECT_TIMEOUT) #retry once
         connection.request('POST', '/render/local/', postData)
       # Read the response
       response = connection.getresponse()
