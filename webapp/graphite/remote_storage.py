@@ -54,7 +54,12 @@ class FindRequest(object):
   def send(self):
     log.info("FindRequest.send(host=%s, query=%s) called" % (self.store.host, self.query))
 
-    self.cachedResult = cache.get(self.cacheKey)
+    try:
+      self.cachedResult = cache.get(self.cacheKey)
+    except:
+      log.exception("Memcached be acting up (host=%s, query=%s key=%s)" % (self.store.host, self.query, self.cacheKey))
+      raise
+
     if self.cachedResult is not None:
       log.info("FindRequest(host=%s, query=%s) using cached result" % (self.store.host, self.query))
       return
